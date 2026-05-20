@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './chess_style.css';
 
 const BLACK_PIECES = new Set(['♜','♞','♝','♛','♚','♟']);
@@ -116,7 +116,6 @@ function simulateMove(board, fromRow, fromCol, toRow, toCol, enPassantTarget) {
   return next;
 }
 
-// ─── Is `color`'s king attacked on this board? ───────────────────────────────
 function isKingInCheck(board, color) {
   // Find the king
   const kingPiece = color === 'white' ? '♔' : '♚';
@@ -124,7 +123,7 @@ function isKingInCheck(board, color) {
   for (let r = 0; r < 8; r++)
     for (let c = 0; c < 8; c++)
       if (board[r][c] === kingPiece) { kingRow = r; kingCol = c; }
-  if (kingRow === -1) return false; // king not found (shouldn't happen)
+  if (kingRow === -1) return false; 
 
   // Check if any enemy piece can reach the king square
   const enemy_color = color === 'white' ? 'black' : 'white';
@@ -140,7 +139,6 @@ function isKingInCheck(board, color) {
   return false;
 }
 
-// ─── Fully legal moves: pseudo-legal minus those that leave own king in check ─
 function getLegalMovesFiltered(board, fromRow, fromCol, castlingRights, enPassantTarget) {
   const piece  = board[fromRow][fromCol];
   const color  = colorOf(piece);
@@ -148,19 +146,17 @@ function getLegalMovesFiltered(board, fromRow, fromCol, castlingRights, enPassan
 
   return pseudo.filter(([toRow, toCol]) => {
     const after = simulateMove(board, fromRow, fromCol, toRow, toCol, enPassantTarget);
-    // For castling, also verify king doesn't pass through check
     const type = PIECE_TYPE[piece];
     if (type === 'king' && Math.abs(toCol - fromCol) === 2) {
       const dir       = toCol > fromCol ? 1 : -1;
       const midBoard  = simulateMove(board, fromRow, fromCol, fromRow, fromCol + dir, enPassantTarget);
       if (isKingInCheck(midBoard, color)) return false;
-      if (isKingInCheck(board, color))    return false; // can't castle out of check
+      if (isKingInCheck(board, color))    return false; 
     }
     return !isKingInCheck(after, color);
   });
 }
 
-// ─── Does `color` have any legal move at all? ────────────────────────────────
 function hasAnyLegalMoves(board, color, castlingRights, enPassantTarget) {
   for (let r = 0; r < 8; r++)
     for (let c = 0; c < 8; c++)
@@ -225,6 +221,66 @@ function buildNotation(piece, fromRow, fromCol, toRow, toCol, capture, castleKin
 }
 
 
+function formatTime(secs) {
+  if (secs <= 0) return '0:00';
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function SetupScreen({ onStart, darkMode, setDarkMode }) {
+  const [startMins, setStartMins] = useState(10);
+  const [incSecs,   setIncSecs]   = useState(5);
+  return (
+    <div className="setup-overlay">
+      <div className="setup-box">
+        <div className="setup-top-row">
+          <h1 className="setup-title">Chess</h1>
+          <button className="theme-toggle-btn" onClick={() => setDarkMode(d => !d)} title="Toggle theme">
+            {darkMode ? '☀️' : '🌙'}
+          </button>
+        </div>
+        <p className="setup-subtitle">Configure your game</p>
+
+        <div className="setup-field">
+          <label className="setup-label">Starting Time</label>
+          <p className="setup-hint">Minutes each player begins with (0 – 60)</p>
+          <div className="setup-slider-row">
+            <input type="range" min={0} max={60} value={startMins}
+              onChange={e => setStartMins(Number(e.target.value))}
+              className="setup-slider" />
+            <span className="setup-value">{startMins} min</span>
+          </div>
+        </div>
+
+        <div className="setup-field">
+          <label className="setup-label">Increment</label>
+          <p className="setup-hint">Seconds added after each move (0 – 60)</p>
+          <div className="setup-slider-row">
+            <input type="range" min={0} max={60} value={incSecs}
+              onChange={e => setIncSecs(Number(e.target.value))}
+              className="setup-slider" />
+            <span className="setup-value">{incSecs} sec</span>
+          </div>
+        </div>
+
+        <button className="setup-start-btn" onClick={() => onStart(startMins * 60, incSecs)}>
+          Start Game
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TimerBlock({ label, seconds, isActive, isLow }) {
+  return (
+    <div className={`timer-block${isActive ? ' timer-active' : ''}${isLow ? ' timer-low' : ''}`}>
+      <span className="timer-label">{label}</span>
+      <span className="timer-value">{formatTime(seconds)}</span>
+    </div>
+  );
+}
+
 const Chessboard = () => {
   const [board,           setBoard]           = useState(initialBoard.map(r => [...r]));
   const [selectedSquare,  setSelectedSquare]  = useState(null);
@@ -235,9 +291,72 @@ const Chessboard = () => {
   const [promotion,       setPromotion]       = useState(null);
   const [draggedPiece,    setDraggedPiece]    = useState(null);
   const [gameStatus,     setGameStatus]      = useState('playing');
-  const [checkedColor,   setCheckedColor]    = useState(null); // which king is in check
+  const [checkedColor,   setCheckedColor]    = useState(null);
 
   const [history, setHistory] = useState([]);
+
+  const [darkMode,    setDarkMode]    = useState(true);
+  const [gameStarted, setGameStarted] = useState(false);
+  const [increment,   setIncrement]   = useState(0);
+
+  const [whiteTime, setWhiteTime] = useState(0);
+  const [blackTime, setBlackTime] = useState(0);
+  const timerRef      = useRef(null);
+  const turnRef       = useRef(turn);
+  const gameStatusRef = useRef(gameStatus);
+  const incrementRef  = useRef(increment);
+  useEffect(() => { turnRef.current       = turn;       }, [turn]);
+  useEffect(() => { gameStatusRef.current = gameStatus; }, [gameStatus]);
+  useEffect(() => { incrementRef.current  = increment;  }, [increment]);
+
+  useEffect(() => {
+    if (!gameStarted) return;
+    timerRef.current = setInterval(() => {
+      if (gameStatusRef.current !== 'playing' && gameStatusRef.current !== 'check') return;
+      if (turnRef.current === 'white') {
+        setWhiteTime(t => {
+          if (t <= 1) {
+            setGameStatus('checkmate');
+            setCheckedColor('white');
+            clearInterval(timerRef.current);
+            return 0;
+          }
+          return t - 1;
+        });
+      } else {
+        setBlackTime(t => {
+          if (t <= 1) {
+            setGameStatus('checkmate');
+            setCheckedColor('black');
+            clearInterval(timerRef.current);
+            return 0;
+          }
+          return t - 1;
+        });
+      }
+    }, 1000);
+    return () => clearInterval(timerRef.current);
+  }, [gameStarted]);
+
+  // Stop ticking on game end
+  useEffect(() => {
+    if (gameStatus === 'checkmate' || gameStatus === 'stalemate')
+      clearInterval(timerRef.current);
+  }, [gameStatus]);
+
+  const handleStart = (startSecs, incSecs) => {
+    setWhiteTime(startSecs);
+    setBlackTime(startSecs);
+    setIncrement(incSecs);
+    incrementRef.current = incSecs;
+    setGameStarted(true);
+  };
+
+  const addIncrement = (movedColor) => {
+    if (incrementRef.current <= 0) return;
+    if (movedColor === 'white') setWhiteTime(t => t + incrementRef.current);
+    else                        setBlackTime(t => t + incrementRef.current);
+  };
 
   const pushSnapshot = (boardBefore, turnBefore, castlingBefore, epBefore, notation) => {
     setHistory(prev => [...prev, {
@@ -324,10 +443,10 @@ const Chessboard = () => {
 
     const promotionRank = color === 'white' ? 0 : 7;
     if (type === 'pawn' && toRow === promotionRank) {
-      // Snapshot stored here; notation will be completed in handlePromotion
       const notation = buildNotation(piece, fromRow, fromCol, toRow, toCol,
                                      isCapture || isEnPassant, false, false, null);
       pushSnapshot(currentBoard, turn, castlingRights, enPassantTarget, notation + '=?');
+      addIncrement(color);
       setBoard(newBoard);
       setEnPassantTarget(newEnPassant);
       setCastlingRights(newCastling);
@@ -342,6 +461,7 @@ const Chessboard = () => {
     pushSnapshot(currentBoard, turn, castlingRights, enPassantTarget, notation);
 
     const nextTurn = turn === 'white' ? 'black' : 'white';
+    addIncrement(color);
     setBoard(newBoard);
     setEnPassantTarget(newEnPassant);
     setCastlingRights(newCastling);
@@ -456,13 +576,23 @@ const Chessboard = () => {
     return acc;
   }, []);
 
+  if (!gameStarted) {
+    return (
+      <div className={`app ${darkMode ? 'dark' : 'light'}`}>
+        <SetupScreen onStart={handleStart} darkMode={darkMode} setDarkMode={setDarkMode} />
+      </div>
+    );
+  }
+
   return (
-    <div className="app">
+    <div className={`app ${darkMode ? 'dark' : 'light'}`}>
       <div className="header">
-        <div className="turn-indicator">
-          <span className={`turn-dot ${turn}`}></span>
+        <div className={`turn-indicator${gameStatus === 'check' ? ' in-check' : ''}${gameStatus === 'checkmate' ? ' checkmate' : ''}${gameStatus === 'stalemate' ? ' stalemate' : ''}`}>
+          {gameStatus !== 'checkmate' && gameStatus !== 'stalemate' && (
+            <span className={`turn-dot ${turn}`}></span>
+          )}
           {gameStatus === 'checkmate'
-            ? `Checkmate — ${checkedColor === 'white' ? 'Black' : 'White'} wins!`
+            ? `${checkedColor === 'white' ? 'Black' : 'White'} wins!`
             : gameStatus === 'stalemate'
             ? 'Stalemate — Draw!'
             : gameStatus === 'check'
@@ -470,6 +600,9 @@ const Chessboard = () => {
             : `${turn.charAt(0).toUpperCase() + turn.slice(1)}'s turn`
           }
         </div>
+        <button className="theme-toggle-btn" onClick={() => setDarkMode(d => !d)} title="Toggle theme">
+          {darkMode ? '☀️' : '🌙'}
+        </button>
       </div>
 
       <div className="board-container">
@@ -534,31 +667,49 @@ const Chessboard = () => {
           ))}
         </div>
 
-        <div className="history-panel">
-          <div className="history-header">Move History</div>
-          <div className="history-body">
-            {moveRows.length === 0 && (
-              <div className="history-empty">No moves yet</div>
-            )}
-            {moveRows.map((pair, i) => (
-              <div key={i} className="history-row">
-                <span className="history-num">{i + 1}.</span>
-                <span className="history-white">{pair[0]?.notation ?? ''}</span>
-                <span className="history-black">{pair[1]?.notation ?? ''}</span>
-              </div>
-            ))}
+        <div className="side-panel">
+          <TimerBlock
+            label="Black"
+            seconds={blackTime}
+            isActive={turn === 'black' && gameStatus !== 'checkmate' && gameStatus !== 'stalemate'}
+            isLow={blackTime > 0 && blackTime <= 10}
+          />
+
+          <div className="history-panel">
+            <div className="history-header">Move History</div>
+            <div className="history-body">
+              {moveRows.length === 0 && (
+                <div className="history-empty">No moves yet</div>
+              )}
+              {moveRows.map((pair, i) => (
+                <div key={i} className="history-row">
+                  <span className="history-num">{i + 1}.</span>
+                  <span className="history-white">{pair[0]?.notation ?? ''}</span>
+                  <span className="history-black">{pair[1]?.notation ?? ''}</span>
+                </div>
+              ))}
+            </div>
+            <button
+              className="undo-btn"
+              onClick={handleUndo}
+              disabled={history.length === 0}
+            >
+              ↩ Undo
+            </button>
           </div>
-          <button
-            className="undo-btn"
-            onClick={handleUndo}
-            disabled={history.length === 0}
-          >
-            ↩ Undo
-          </button>
+
+          <TimerBlock
+            label="White"
+            seconds={whiteTime}
+            isActive={turn === 'white' && gameStatus !== 'checkmate' && gameStatus !== 'stalemate'}
+            isLow={whiteTime > 0 && whiteTime <= 10}
+          />
         </div>
       </div>
     </div>
   );
 };
+
+export default Chessboard;
 
 export default Chessboard;
